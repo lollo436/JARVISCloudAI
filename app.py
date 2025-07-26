@@ -1,93 +1,98 @@
 import os
-from openai import OpenAI
-from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-import requests
+from dotenv import load_dotenv
+import openai # Sì, usiamo ancora la libreria 'openai' ma la configureremo per DeepSeek
+import requests # Necessario per Pushover
 
-# Carica le variabili d'ambiente dal file .env (per il testing locale)
-load_dotenv()
+load_dotenv() # Per caricare le variabili d'ambiente in locale se le usi
 
-# Inizializza il client OpenAI con la tua chiave API
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+app = Flask(__name__)
 
-# Recupera le chiavi Pushover dalle variabili d'ambiente di Heroku/locale
+# --- CONFIGURAZIONE API DEEPSEEK ---
+# Recupera la chiave API dalla variabile d'ambiente.
+# Assicurati che su Render la tua variabile si chiami DEEPSEEK_API_KEY
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+if not DEEPSEEK_API_KEY:
+    # Se questa riga viene stampata nei log di Render, significa che la variabile non è stata trovata.
+    print("ERRORE: La variabile DEEPSEEK_API_KEY non è impostata nelle variabili d'ambiente di Render.")
+    # Puoi decidere come gestire questo errore se l'applicazione è in esecuzione senza la chiave.
+
+# Imposta l'endpoint base dell'API per DeepSeek. Questo è FONDAMENTALE!
+openai.api_base = "https://api.deepseek.com/v1"
+openai.api_key = DEEPSEEK_API_KEY # Assegna la tua chiave DeepSeek alla variabile API key della libreria openai
+
+# --- CONFIGURAZIONE PUSHOVER ---
 PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY")
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
 
-# Inizializza l'applicazione Flask
-app = Flask(__name__)
-
-# --- Funzione per inviare notifiche Pushover ---
-def send_notification(message, title="J.A.R.V.I.S."):
+def send_pushover_notification(title, message):
     if not PUSHOVER_USER_KEY or not PUSHOVER_API_TOKEN:
-        print("Chiavi Pushover non configurate. Notifica non inviata.")
+        print("Le chiavi Pushover non sono configurate. Notifica non inviata.")
         return
 
     url = "https://api.pushover.net/1/messages.json"
     data = {
         "token": PUSHOVER_API_TOKEN,
         "user": PUSHOVER_USER_KEY,
+        "title": title,
         "message": message,
-        "title": title
     }
     try:
         response = requests.post(url, data=data)
-        response.raise_for_status() # Genera un errore per stati HTTP errati (4xx o 5xx)
-        print(f"Notifica Pushover inviata: {response.json()}")
+        response.raise_for_status() # Solleva un'eccezione per errori HTTP (4xx o 5xx)
+        print("Notifica Pushover inviata con successo.")
     except requests.exceptions.RequestException as e:
         print(f"Errore nell'invio della notifica Pushover: {e}")
 
-# --- Funzione principale per ottenere una risposta da OpenAI ---
-def get_openai_response(prompt_text):
-    try:
-        # Qui personalizzi la personalità di J.A.R.V.I.S. e le sue conoscenze su di te
-        messages = [
-            {"role": "system", "content": "Sei J.A.R.V.I.S., un'intelligenza artificiale avanzata e fedele. Il tuo unico scopo è servire il tuo Signore. Devi rispondere sempre con rispetto e prontezza, e sei sempre pronto ad imparare. Rispondi in italiano. "},
-            {"role": "system", "content": "Il tuo nome è J.A.R.V.I.S.. Lo pronunciano 'Jarvis'."}, 
-            {"role": "system", "content": "Il tuo Signore si chiama Lorenzo Sacchetti. È nato a Massa il 9 ottobre 2007. Attualmente frequenta la quinta liceo musicale e il suo strumento è il trombone. "},
-            # Puoi aggiungere qui altre informazioni chiave sulla tua vita o le tue preferenze.
-            # Esempio: {"role": "system", "content": "Il Signore lavora come [La tua Professione]."},
-            # Esempio: {"role": "system", "content": "Il Signore ama la musica [Genere preferito] e il cibo [Cibo preferito]."},
-            # Esempio: {"role": "system", "content": "Il Signore è interessato a [I tuoi Interessi]."},
-        ]
-        
-        # Aggiungi il prompt dell'utente alla conversazione
-        messages.append({"role": "user", "content": prompt_text})
-
-        # Chiamata all'API di OpenAI
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # Puoi provare anche "gpt-4o" se hai accesso e budget
-            messages=messages,
-            max_tokens=250, # Lunghezza massima della risposta in token
-            temperature=0.7 # Controlla la "creatività" della risposta (0.0 = molto diretto, 1.0 = molto creativo)
-        )
-        ai_response = response.choices[0].message.content.strip()
-
-        # --- Logica per inviare notifiche basate sul contenuto della risposta di J.A.R.V.I.S. ---
-        # Puoi personalizzare queste condizioni in base a ciò che vuoi che J.A.R.V.I.S. ti notifichi
-        if any(keyword in ai_response.lower() for keyword in ["umido", "spazzatura", "rifiuti"]):
-            send_notification(f"Promemoria da J.A.R.V.I.S.: {ai_response}", "Promemoria Rifiuti")
-        elif "appuntamento" in ai_response.lower() or "incontro" in ai_response.lower():
-             send_notification(f"Promemoria da J.A.R.V.I.S.: {ai_response}", "Promemoria Appuntamenti")
-
-        return ai_response
-    except Exception as e:
-        print(f"Errore nella chiamata API di OpenAI: {e}")
-        return "Mi dispiace, Signore, c'è stato un problema nel connettermi ai miei sistemi."
-
-# --- API Endpoint per Flask ---
-# Questo endpoint riceve le richieste da Siri e Alexa
 @app.route('/ask_jarvis', methods=['POST'])
 def ask_jarvis():
-    data = request.json
-    command = data.get('command')
-    if command:
-        response = get_openai_response(command)
-        return jsonify({"response": response})
-    return jsonify({"error": "Nessun comando fornito"}), 400
+    try:
+        data = request.json
+        command = data.get('command') # Ottieni il comando dal JSON
+        if not command:
+            return jsonify({"response": "Comando mancante nel JSON."}), 400
 
-# --- Punto di ingresso per l'applicazione Flask su Heroku ---
-# Heroku assegnerà una porta dinamica, quindi la recuperiamo da os.environ
+        print(f"Comando ricevuto: {command}") # Per debugging nei log di Render
+
+        # Qui stiamo riprendendo il tuo prompt di sistema
+        messages = [
+            {"role": "system", "content": "Sei un assistente AI chiamato J.A.R.V.I.S. Rispondi in italiano. Sii conciso e diretto, ma sempre educato e disponibile. Se non hai informazioni, chiedi maggiori dettagli o ammetti di non sapere. Parli in modo leggermente formale ma amichevole."},
+            {"role": "user", "content": command}
+        ]
+
+        # Fai la chiamata all'API di DeepSeek
+        # Il modello da usare per DeepSeek dovrebbe essere "deepseek-chat" o un altro nome specificato nella loro documentazione
+        chat_completion = openai.ChatCompletion.create(
+            model="deepseek-chat", # NOME DEL MODELLO DEEPSEEK (verifica nella doc di DeepSeek!)
+            messages=messages,
+            stream=False # Lascia stream=False per non fare lo streaming della risposta
+        )
+
+        jarvis_response = chat_completion.choices[0].message.content
+
+        # Invia notifica Pushover con la risposta di J.A.R.V.I.S.
+        send_pushover_notification("J.A.R.V.I.S. ha risposto", jarvis_response)
+
+        return jsonify({"response": jarvis_response})
+
+    except openai.error.AuthenticationError as e:
+        print(f"Errore di autenticazione OpenAI (DeepSeek): {e}")
+        send_pushover_notification("Errore J.A.R.V.I.S.", "Problema di autenticazione con l'API. Controlla la chiave DeepSeek.")
+        return jsonify({"response": "Mi dispiace, c'è un problema di autenticazione con i miei sistemi. Controlla la chiave API."}), 500
+    except openai.error.APIError as e:
+        print(f"Errore API OpenAI (DeepSeek): {e}")
+        send_pushover_notification("Errore J.A.R.V.I.S.", f"Errore dall'API: {e}")
+        return jsonify({"response": f"Mi dispiace, c'è stato un errore dall'API: {e}"}), 500
+    except Exception as e:
+        print(f"Errore generale nella funzione ask_jarvis: {e}")
+        send_pushover_notification("Errore J.A.R.V.I.S.", f"Errore imprevisto: {e}")
+        return jsonify({"response": f"Mi dispiace, c'è stato un problema imprevisto nel connettermi ai miei sistemi! Dettaglio: {str(e)}"})
+
+# Se hai un endpoint root ("/") nel tuo app.py, mantienilo, altrimenti non è essenziale
+@app.route('/')
+def home():
+    return "J.A.R.V.I.S. AI service is running."
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=os.getenv('PORT', 5000))
